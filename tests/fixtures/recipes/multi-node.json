@@ -1,0 +1,29 @@
+{
+  "variant": "default",
+  "hardware": "h200",
+  "strategy": "multi_node_tp",
+  "node_count": 2,
+  "deploy_type": "multi_node",
+  "env": {
+    "GLOO_SOCKET_IFNAME": "$IFACE_NAME"
+  },
+  "head_argv": [
+    "vllm",
+    "serve",
+    "zai-org/GLM-5",
+    "--tensor-parallel-size",
+    "16"
+  ],
+  "worker_argv": [
+    "vllm",
+    "serve",
+    "zai-org/GLM-5",
+    "--headless"
+  ],
+  "hardware_profile": {
+    "display_name": "H200",
+    "gpu_count": 8,
+    "vram_gb": 1128,
+    "multi_node": false
+  }
+}

@@ -1,0 +1,16 @@
+[
+  {
+    "hf_id": "LiquidAI/LFM2.5-8B-A1B",
+    "title": "LFM2.5 8B A1B",
+    "provider": "LiquidAI",
+    "url": "/LiquidAI/LFM2.5-8B-A1B",
+    "json": "/LiquidAI/LFM2.5-8B-A1B.json"
+  },
+  {
+    "hf_id": "zai-org/GLM-5",
+    "title": "GLM-5",
+    "provider": "GLM (Z-AI)",
+    "url": "/zai-org/GLM-5",
+    "json": "/zai-org/GLM-5.json"
+  }
+]

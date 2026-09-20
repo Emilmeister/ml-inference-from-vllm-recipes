@@ -1,0 +1,26 @@
+{
+  "variant": "default",
+  "hardware": "h100",
+  "strategy": "single_node_tp",
+  "node_count": 1,
+  "deploy_type": "single_node",
+  "env": {},
+  "argv": [
+    "vllm",
+    "serve",
+    "LiquidAI/LFM2.5-8B-A1B",
+    "--tensor-parallel-size",
+    "1",
+    "--reasoning-parser",
+    "qwen3",
+    "--enable-auto-tool-choice",
+    "--tool-call-parser",
+    "lfm2"
+  ],
+  "hardware_profile": {
+    "display_name": "H100",
+    "gpu_count": 8,
+    "vram_gb": 640,
+    "multi_node": false
+  }
+}

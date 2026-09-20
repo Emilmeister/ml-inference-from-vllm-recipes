@@ -21,3 +21,10 @@ __pycache__/
 
 # records/ и docs/ намеренно не исключены: это знания и история проекта.
 # Зависимости и результаты сборки добавляются сюда после выбора стека.
+/frontend/node_modules/
+/frontend/dist/
+/frontend/*.tsbuildinfo
+/frontend/playwright-report/
+/frontend/test-results/
+/.pytest_cache/
+/.ruff_cache/

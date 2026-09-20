@@ -1,0 +1,37 @@
+[build-system]
+requires = ["hatchling"]
+build-backend = "hatchling.build"
+
+[project]
+name = "vllm-recipes-cloudru"
+version = "0.1.0"
+description = "Launch vLLM Recipes as Cloud.ru ML Inference Model Runs"
+requires-python = ">=3.13,<3.14"
+dependencies = [
+    "fastapi==0.141.1",
+    "httpx==0.28.1",
+    "pydantic==2.13.5",
+    "uvicorn[standard]==0.53.0",
+]
+
+[dependency-groups]
+dev = [
+    "pytest==9.1.1",
+    "pytest-bdd==8.1.0",
+    "pytest-playwright==0.9.0",
+    "ruff==0.16.8",
+]
+
+[tool.hatch.build.targets.wheel]
+packages = ["src/vllm_cloudru"]
+
+[tool.pytest.ini_options]
+pythonpath = ["src"]
+testpaths = ["tests"]
+
+[tool.ruff]
+line-length = 100
+target-version = "py313"
+
+[tool.ruff.lint]
+select = ["E", "F", "I", "B", "UP"]
