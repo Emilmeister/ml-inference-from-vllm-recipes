@@ -4,6 +4,7 @@ import { Link, useSearchParams } from "react-router-dom";
 
 import { ApiError, createInference, getCloudOptions, getRecipeDetail } from "../api";
 import { ErrorDialog } from "../components/ErrorDialog";
+import { FrontendRecommendationDialog } from "../components/FrontendRecommendationDialog";
 import { Notice } from "../components/Notice";
 import { RecipeConfigurationPicker } from "../components/RecipeConfigurationPicker";
 import { loadCredentials } from "../credentials";
@@ -42,6 +43,7 @@ const CONFIGURATION_QUERY_KEYS = [
   "feature_mode",
   "features_configured",
 ] as const;
+const DEFAULT_GPU_MEMORY_UTILIZATION = 0.97;
 
 type DeploymentAttempt = {
   id: string;
@@ -109,6 +111,13 @@ function warningList(error: ApiError): string[] {
     : [];
 }
 
+function invalidArgumentKeys(error: ApiError): string[] {
+  const keys = error.details?.invalidKeys;
+  return Array.isArray(keys)
+    ? keys.filter((key): key is string => typeof key === "string")
+    : [];
+}
+
 function configurationFromQuery(params: URLSearchParams): RecipeConfigurationSelection {
   const featureModes: Record<string, string> = {};
   params.getAll("feature_mode").forEach((item) => {
@@ -127,6 +136,46 @@ function configurationFromQuery(params: URLSearchParams): RecipeConfigurationSel
     features: featuresConfigured ? params.getAll("feature") : undefined,
     feature_modes: featureModes,
   };
+}
+
+function queryWithConfiguration(
+  params: URLSearchParams,
+  selection: RecipeConfigurationSelection,
+): URLSearchParams {
+  const next = new URLSearchParams(params);
+  CONFIGURATION_QUERY_KEYS.forEach((key) => next.delete(key));
+  if (selection.variant) next.set("variant", selection.variant);
+  if (selection.strategy) next.set("strategy", selection.strategy);
+  if (selection.kv_offload) next.set("kv_offload", selection.kv_offload);
+  if (selection.frontend) next.set("frontend", selection.frontend);
+  if (selection.features !== undefined && selection.features !== null) {
+    next.set("features_configured", "true");
+    selection.features.forEach((feature) => next.append("feature", feature));
+  }
+  Object.entries(selection.feature_modes).forEach(([feature, mode]) => {
+    next.append("feature_mode", `${feature}:${mode}`);
+  });
+  return next;
+}
+
+function normalizedArgumentKey(key: string): string {
+  return key.replace(/^-+/, "").replaceAll("_", "-").toLowerCase();
+}
+
+function effectiveArguments(
+  argumentsFromRecipe: NonNullable<RecipeDetail["translated"]>["arguments"],
+  gpuMemoryUtilization: number,
+) {
+  return [
+    ...argumentsFromRecipe.filter(
+      (argument) => normalizedArgumentKey(argument.key) !== "gpu-memory-utilization",
+    ),
+    {
+      key: "gpu-memory-utilization",
+      value: gpuMemoryUtilization,
+      parameterType: "PARAMETER_TYPE_ARG_KV_NUMERIC",
+    },
+  ];
 }
 
 export function DeployPage() {
@@ -163,6 +212,9 @@ export function DeployPage() {
   const [runtimeId, setRuntimeId] = useState("");
   const [minScale, setMinScale] = useState(1);
   const [maxScale, setMaxScale] = useState(1);
+  const [gpuMemoryUtilization, setGpuMemoryUtilization] = useState(
+    DEFAULT_GPU_MEMORY_UTILIZATION,
+  );
   const [serviceAccountId, setServiceAccountId] = useState("");
   const [authenticationType, setAuthenticationType] = useState<AuthenticationType>(
     "AUTHENTICATION_TYPE_KEY_BASED",
@@ -173,13 +225,18 @@ export function DeployPage() {
   const [confirmed, setConfirmed] = useState(false);
   const [error, setError] = useState<string | null>(null);
   const [createError, setCreateError] = useState<string | null>(null);
+  const [unsupportedArgumentKeys, setUnsupportedArgumentKeys] = useState<string[]>([]);
   const [uncertain, setUncertain] = useState<string | null>(null);
   const [canRetryAfterCheck, setCanRetryAfterCheck] = useState(false);
   const [loading, setLoading] = useState(true);
   const [recipeLoading, setRecipeLoading] = useState(true);
   const [submitting, setSubmitting] = useState(false);
+  const [configurationAdjustments, setConfigurationAdjustments] = useState<string[]>([]);
+  const [recommendationOpen, setRecommendationOpen] = useState(false);
+  const [dismissedRecommendation, setDismissedRecommendation] = useState<string | null>(null);
   const [result, setResult] = useState<{ hfId: string; value: CreateInferenceResult } | null>(null);
   const warningsRef = useRef<HTMLDivElement>(null);
+  const reconcileNextRequestRef = useRef(false);
 
   const confirmationContext = JSON.stringify({
     hfId,
@@ -188,6 +245,7 @@ export function DeployPage() {
     runtimeId,
     minScale,
     maxScale,
+    gpuMemoryUtilization,
     serviceAccountId,
     authenticationType,
     logGroupId,
@@ -195,6 +253,21 @@ export function DeployPage() {
   });
   const activeWarnings = warningContext === confirmationContext ? warnings : [];
   const normalizedName = normalizeName(name);
+  const vllmArguments = effectiveArguments(
+    recipe?.translated?.arguments ?? [],
+    gpuMemoryUtilization,
+  );
+  const recommendationFingerprint = JSON.stringify({
+    resource,
+    renderingPath: recipe?.rendering_path,
+    configuration: recipe?.configuration?.selection ?? requestedConfiguration,
+  });
+  const shouldRecommendPython = (
+    (recipe?.configuration?.selection.frontend ?? requestedConfiguration.frontend) === "rust"
+    && vllmArguments.some(
+      (argument) => normalizedArgumentKey(argument.key) === "hf-overrides",
+    )
+  );
 
   useEffect(() => {
     if (!validHfId) {
@@ -218,12 +291,17 @@ export function DeployPage() {
     setConfirmed(false);
     setError(null);
     setCreateError(null);
+    setUnsupportedArgumentKeys([]);
     setUncertain(null);
     setCanRetryAfterCheck(false);
     setResult(null);
     setServiceAccountId("");
     setAuthenticationType("AUTHENTICATION_TYPE_KEY_BASED");
     setLogGroupId("");
+    setGpuMemoryUtilization(DEFAULT_GPU_MEMORY_UTILIZATION);
+    setConfigurationAdjustments([]);
+    setRecommendationOpen(false);
+    setDismissedRecommendation(null);
 
     const restoreAttempt = () => {
       const attempt = readAttempt();
@@ -254,10 +332,27 @@ export function DeployPage() {
   useEffect(() => {
     if (!hfId) return;
     let active = true;
+    const reconcileConfiguration = reconcileNextRequestRef.current;
+    reconcileNextRequestRef.current = false;
     setError(null);
     setRecipeLoading(true);
-    getRecipeDetail(hfId, resource, requestedConfiguration)
-      .then((value) => { if (active) setRecipe(value); })
+    getRecipeDetail(hfId, resource, requestedConfiguration, reconcileConfiguration)
+      .then((value) => {
+        if (!active) return;
+        setRecipe(value);
+        if (reconcileConfiguration) {
+          setConfigurationAdjustments(value.configuration_adjustments ?? []);
+          if (value.configuration) {
+            const next = queryWithConfiguration(
+              searchParams,
+              value.configuration.selection,
+            );
+            if (next.toString() !== searchParams.toString()) {
+              setSearchParams(next, { replace: true });
+            }
+          }
+        }
+      })
       .catch((reason) => {
         if (active) setError(reason instanceof ApiError ? reason.message : "Не удалось открыть рецепт");
       })
@@ -310,27 +405,41 @@ export function DeployPage() {
   }
 
   function changeResource(value: string) {
+    if (recipeLoading) return;
     const selected = gpuOptions.find((option) => option.value === value);
     if (!selected) return;
-    const next = new URLSearchParams(searchParams);
+    const next = recipe?.configuration
+      ? queryWithConfiguration(searchParams, recipe.configuration.selection)
+      : new URLSearchParams(searchParams);
     next.set("resource", selected.value);
-    ["variant", "strategy", "kv_offload", "feature", "feature_mode", "features_configured"].forEach(
-      (key) => next.delete(key),
-    );
+    ["variant", "strategy", "kv_offload"].forEach((key) => next.delete(key));
+    reconcileNextRequestRef.current = true;
+    setConfigurationAdjustments([]);
+    setRecipeLoading(true);
     setSearchParams(next, { replace: true });
     if (!selected.counts.includes(gpuCount)) setGpuCount(selected.counts[0]);
     resetConfirmation();
   }
 
   function resetConfiguration() {
+    if (recipeLoading) return;
     const next = new URLSearchParams(searchParams);
     CONFIGURATION_QUERY_KEYS.forEach((key) => next.delete(key));
+    setConfigurationAdjustments([]);
+    if (next.toString() === searchParams.toString()) {
+      resetConfirmation();
+      return;
+    }
+    setRecipeLoading(true);
     setSearchParams(next, { replace: true });
     resetConfirmation();
   }
 
   function changeConfiguration(group: string, option: string, selected: boolean) {
-    const next = new URLSearchParams(searchParams);
+    if (recipeLoading) return;
+    const next = recipe?.configuration
+      ? queryWithConfiguration(searchParams, recipe.configuration.selection)
+      : new URLSearchParams(searchParams);
     if (group === "variant") {
       next.set("variant", option);
       ["strategy", "kv_offload", "feature", "feature_mode", "features_configured"].forEach(
@@ -366,6 +475,8 @@ export function DeployPage() {
       remainingModes.forEach((value) => next.append("feature_mode", value));
       next.append("feature_mode", `${feature}:${option}`);
     }
+    setConfigurationAdjustments([]);
+    setRecipeLoading(true);
     setSearchParams(next, { replace: true });
     resetConfirmation();
   }
@@ -379,10 +490,91 @@ export function DeployPage() {
     setError(null);
   }
 
+  async function sendCreate(excludedArgumentKeys: string[] = []) {
+    const attemptId = window.crypto.randomUUID();
+    liveAttemptIds.add(attemptId);
+    if (!saveAttempt({ id: attemptId, status: "pending", hfId })) {
+      liveAttemptIds.delete(attemptId);
+      setError("Браузер не позволяет сохранить защиту от повторного запуска. Создание отменено.");
+      return;
+    }
+
+    setSubmitting(true);
+    try {
+      const created = await createInference({
+        name: normalizedName,
+        hf_id: hfId,
+        resource_type: resource,
+        gpu_count: gpuCount,
+        runtime_template_id: runtimeId,
+        min_scale: minScale,
+        max_scale: maxScale,
+        service_account_id: serviceAccountId,
+        authentication_type: authenticationType,
+        log_group_id: logGroupId,
+        gpu_memory_utilization: gpuMemoryUtilization,
+        ...(excludedArgumentKeys.length
+          ? { excluded_argument_keys: excludedArgumentKeys }
+          : {}),
+        configuration: recipe?.configuration?.selection ?? requestedConfiguration,
+        confirm_warnings: activeWarnings.length > 0 && confirmed,
+      });
+      clearAttempt(attemptId);
+      setResult({ hfId, value: created });
+    } catch (reason) {
+      const rejectedKeys = reason instanceof ApiError ? invalidArgumentKeys(reason) : [];
+      if (reason instanceof ApiError && reason.code === "confirmation_required") {
+        const receivedWarnings = warningList(reason);
+        setWarnings(receivedWarnings.length
+          ? receivedWarnings
+          : ["Cloud.ru требует явного подтверждения параметров запуска"]);
+        setWarningContext(confirmationContext);
+        setConfirmed(false);
+        clearAttempt(attemptId);
+      } else if (
+        reason instanceof ApiError
+        && reason.code === "unsupported_runtime_arguments"
+        && rejectedKeys.length
+      ) {
+        clearAttempt(attemptId);
+        setUnsupportedArgumentKeys(excludedArgumentKeys.length ? [] : rejectedKeys);
+        setCreateError(reason.message);
+      } else if (
+        reason instanceof ApiError
+        && (reason.code === "create_uncertain"
+          || reason.code === "network_error"
+          || reason.code === "invalid_response"
+          || reason.status >= 500)
+      ) {
+        const message = reason.message || "Результат создания не подтверждён";
+        replaceAttempt(attemptId, { id: attemptId, status: "uncertain", hfId, message });
+        setUncertain(message);
+        setCanRetryAfterCheck(true);
+        setUnsupportedArgumentKeys([]);
+        setCreateError(message);
+      } else if (reason instanceof ApiError && reason.status > 0 && reason.status < 500) {
+        clearAttempt(attemptId);
+        setUnsupportedArgumentKeys([]);
+        setCreateError(reason.message);
+      } else {
+        const message = "Результат создания не подтверждён";
+        replaceAttempt(attemptId, { id: attemptId, status: "uncertain", hfId, message });
+        setUncertain(message);
+        setCanRetryAfterCheck(true);
+        setUnsupportedArgumentKeys([]);
+        setCreateError(message);
+      }
+    } finally {
+      liveAttemptIds.delete(attemptId);
+      setSubmitting(false);
+    }
+  }
+
   async function submit(event: FormEvent<HTMLFormElement>) {
     event.preventDefault();
     setError(null);
     setCreateError(null);
+    setUnsupportedArgumentKeys([]);
     if (uncertain) {
       setError("Сначала проверьте список Model Run и явно разрешите новую попытку");
       return;
@@ -416,67 +608,14 @@ export function DeployPage() {
       setError("Подтвердите предупреждения перед созданием Model Run");
       return;
     }
-    const attemptId = window.crypto.randomUUID();
-    liveAttemptIds.add(attemptId);
-    if (!saveAttempt({ id: attemptId, status: "pending", hfId })) {
-      liveAttemptIds.delete(attemptId);
-      setError("Браузер не позволяет сохранить защиту от повторного запуска. Создание отменено.");
+    if (
+      shouldRecommendPython
+      && dismissedRecommendation !== recommendationFingerprint
+    ) {
+      setRecommendationOpen(true);
       return;
     }
-
-    setSubmitting(true);
-    try {
-      const created = await createInference({
-        name: normalizedName,
-        hf_id: hfId,
-        resource_type: resource,
-        gpu_count: gpuCount,
-        runtime_template_id: runtimeId,
-        min_scale: minScale,
-        max_scale: maxScale,
-        service_account_id: serviceAccountId,
-        authentication_type: authenticationType,
-        log_group_id: logGroupId,
-        configuration: recipe?.configuration?.selection ?? requestedConfiguration,
-        confirm_warnings: activeWarnings.length > 0 && confirmed,
-      });
-      clearAttempt(attemptId);
-      setResult({ hfId, value: created });
-    } catch (reason) {
-      if (reason instanceof ApiError && reason.code === "confirmation_required") {
-        const receivedWarnings = warningList(reason);
-        setWarnings(receivedWarnings.length
-          ? receivedWarnings
-          : ["Cloud.ru требует явного подтверждения параметров запуска"]);
-        setWarningContext(confirmationContext);
-        setConfirmed(false);
-        clearAttempt(attemptId);
-      } else if (
-        reason instanceof ApiError
-        && (reason.code === "create_uncertain"
-          || reason.code === "network_error"
-          || reason.code === "invalid_response"
-          || reason.status >= 500)
-      ) {
-        const message = reason.message || "Результат создания не подтверждён";
-        replaceAttempt(attemptId, { id: attemptId, status: "uncertain", hfId, message });
-        setUncertain(message);
-        setCanRetryAfterCheck(true);
-        setCreateError(message);
-      } else if (reason instanceof ApiError && reason.status > 0 && reason.status < 500) {
-        clearAttempt(attemptId);
-        setCreateError(reason.message);
-      } else {
-        const message = "Результат создания не подтверждён";
-        replaceAttempt(attemptId, { id: attemptId, status: "uncertain", hfId, message });
-        setUncertain(message);
-        setCanRetryAfterCheck(true);
-        setCreateError(message);
-      }
-    } finally {
-      liveAttemptIds.delete(attemptId);
-      setSubmitting(false);
-    }
+    await sendCreate();
   }
 
   if (!hfId) {
@@ -503,11 +642,12 @@ export function DeployPage() {
     configuration: recipe?.configuration?.selection ?? requestedConfiguration,
     renderingPath: recipe?.rendering_path,
     modelId: recipe?.translated?.model_id,
-    vllmArguments: recipe?.translated?.arguments ?? [],
+    vllmArguments,
     vllmEnvironment: recipe?.translated?.environment ?? [],
     normalizedName,
     resourceType: resource,
     gpuCount,
+    gpuMemoryUtilization,
     scaling: { minScale, maxScale },
     runtimeTemplateId: runtimeId || "не выбран",
     serviceAccount: options?.serviceAccounts.find((account) => account.id === serviceAccountId)?.name
@@ -521,12 +661,45 @@ export function DeployPage() {
 
   return (
     <section className="deploy-page">
-      <ErrorDialog message={createError} onClose={() => setCreateError(null)} />
+      <ErrorDialog
+        actionLabel={unsupportedArgumentKeys.length ? "Создать без этих параметров" : undefined}
+        message={createError}
+        onAction={unsupportedArgumentKeys.length ? () => {
+          const keys = unsupportedArgumentKeys;
+          setCreateError(null);
+          setUnsupportedArgumentKeys([]);
+          void sendCreate(keys);
+        } : undefined}
+        onClose={() => {
+          setCreateError(null);
+          setUnsupportedArgumentKeys([]);
+        }}
+      />
+      <FrontendRecommendationDialog
+        onKeepRust={() => {
+          setDismissedRecommendation(recommendationFingerprint);
+          setRecommendationOpen(false);
+        }}
+        onSwitchToPython={() => {
+          setRecommendationOpen(false);
+          changeConfiguration("frontend", "python", true);
+        }}
+        open={recommendationOpen}
+      />
       <Link className="back-link" to={`/catalog/${hfId.split("/").map(encodeURIComponent).join("/")}?resource=${encodeURIComponent(resource)}`}><ArrowLeft aria-hidden="true" size={18} />К рецепту</Link>
       <header className="page-header"><div><p className="kicker">Новый Model Run / {hfId}</p><h1>Соберите запуск.</h1><p>Выберите опубликованную конфигурацию vLLM, GPU и масштабирование Cloud.ru.</p></div></header>
 
       {uncertain ? <Notice live title="Результат создания не подтверждён" tone="warning"><p>{uncertain}</p><p>Не повторяйте запуск автоматически. Обновите список Model Run и проверьте результат вручную.</p><div className="uncertain-actions"><Link to="/inferences">Проверить мои инференсы</Link>{canRetryAfterCheck ? <button onClick={allowRetryAfterManualCheck} type="button">Я проверил список — разрешить новую попытку</button> : null}</div></Notice> : null}
       {error ? <Notice live tone="error">{error}</Notice> : null}
+      {configurationAdjustments.length ? (
+        <Notice live title="Конфигурация согласована с новым GPU" tone="warning">
+          <ul className="configuration-adjustments">
+            {configurationAdjustments.map((adjustment) => (
+              <li key={adjustment}>{adjustment}</li>
+            ))}
+          </ul>
+        </Notice>
+      ) : null}
 
       <form className="deploy-layout" onSubmit={submit}>
         <div className="deploy-form">
@@ -543,6 +716,7 @@ export function DeployPage() {
             {recipe?.configuration ? (
               <RecipeConfigurationPicker
                 configuration={recipe.configuration}
+                disabled={recipeLoading}
                 onChange={changeConfiguration}
                 onReset={resetConfiguration}
               />
@@ -557,9 +731,28 @@ export function DeployPage() {
           <section className="wizard-section">
             <div className="section-heading"><span>03</span><h2>GPU</h2></div>
             <div className="choice-grid">
-              {gpuOptions.map((option) => <label className={`gpu-choice${resource === option.value ? " gpu-choice--active" : ""}`} key={option.value}><input checked={resource === option.value} name="gpu" onChange={() => changeResource(option.value)} type="radio" /><Cpu aria-hidden="true" size={19} /><span>{option.label}</span></label>)}
+              {gpuOptions.map((option) => <label className={`gpu-choice${resource === option.value ? " gpu-choice--active" : ""}`} key={option.value}><input checked={resource === option.value} disabled={recipeLoading} name="gpu" onChange={() => changeResource(option.value)} type="radio" /><Cpu aria-hidden="true" size={19} /><span>{option.label}</span></label>)}
             </div>
             <label className="compact-field compact-field--large"><span>Количество GPU</span><select onChange={(event) => { setGpuCount(Number(event.target.value)); resetConfirmation(); }} value={gpuCount}>{gpu.counts.map((count) => <option key={count} value={count}>{count}</option>)}</select></label>
+            <div className="gpu-memory-control">
+              <div className="gpu-memory-control__heading">
+                <label htmlFor="gpu-memory-utilization">GPU memory utilization</label>
+                <output htmlFor="gpu-memory-utilization">{gpuMemoryUtilization.toFixed(2)}</output>
+              </div>
+              <input
+                id="gpu-memory-utilization"
+                max="0.99"
+                min="0.85"
+                onChange={(event) => {
+                  setGpuMemoryUtilization(Number(event.target.value));
+                  resetConfirmation();
+                }}
+                step="0.01"
+                type="range"
+                value={gpuMemoryUtilization}
+              />
+              <small><span>0.85</span><span>0.99</span></small>
+            </div>
           </section>
 
           <section className="wizard-section">

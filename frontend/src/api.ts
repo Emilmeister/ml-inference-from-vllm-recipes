@@ -146,6 +146,7 @@ export async function getRecipeDetail(
   hfId: string,
   resourceType: string,
   selection: RecipeConfigurationSelection = { feature_modes: {} },
+  reconcileConfiguration = false,
 ): Promise<RecipeDetail> {
   const [organization, model, ...rest] = hfId.split("/");
   if (!organization || !model || rest.length) {
@@ -163,6 +164,7 @@ export async function getRecipeDetail(
   Object.entries(selection.feature_modes).forEach(([feature, mode]) => {
     query.append("feature_mode", `${feature}:${mode}`);
   });
+  if (reconcileConfiguration) query.set("reconcile_configuration", "true");
   const result = await get<unknown>(
     `/api/recipes/${encodeURIComponent(organization)}/${encodeURIComponent(model)}?${query}`,
   );

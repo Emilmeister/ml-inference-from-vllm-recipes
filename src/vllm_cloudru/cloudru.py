@@ -40,6 +40,7 @@ GPU_OPTIONS = {
 
 _RETRY_STATUSES = {502, 503, 504}
 _SAFE_REQUEST_ID = re.compile(r"[A-Za-z0-9._:-]{1,128}\Z")
+_SAFE_ARGUMENT_KEY = re.compile(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}\Z")
 _MODEL_RUN_ID = re.compile(r"[A-Za-z0-9-]{1,128}\Z")
 _LOG_BODY_LIMIT = 4_000
 _REDACTED = "<redacted>"
@@ -61,6 +62,17 @@ class CloudruError(RuntimeError):
 
 class CloudruCreateUncertain(CloudruError):
     pass
+
+
+class CloudruUnsupportedArguments(CloudruError):
+    def __init__(self, status_code: int, invalid_keys: list[str]) -> None:
+        keys = list(dict.fromkeys(invalid_keys))
+        super().__init__(
+            status_code,
+            "Runtime template не поддерживает параметры: "
+            f"{', '.join(keys)}. Без них рецепт может запуститься некорректно.",
+        )
+        self.invalid_keys = keys
 
 
 def _sensitive_field(key: Any) -> bool:
@@ -175,6 +187,30 @@ def _project_segment(project_id: str) -> str:
         raise CloudruError(400, "Project ID должен быть UUID") from None
 
 
+def _unsupported_argument_keys(response: httpx.Response) -> list[str]:
+    if response.status_code != 400:
+        return []
+    try:
+        payload = response.json()
+    except ValueError:
+        return []
+    if not isinstance(payload, dict) or not isinstance(payload.get("errors"), list):
+        return []
+    for error in payload["errors"]:
+        if (
+            isinstance(error, dict)
+            and error.get("key") == "framework_registry.arguments_validation_error"
+            and isinstance(error.get("details"), dict)
+            and isinstance(error["details"].get("invalid_keys"), list)
+        ):
+            return [
+                key
+                for key in error["details"]["invalid_keys"]
+                if isinstance(key, str) and _SAFE_ARGUMENT_KEY.fullmatch(key)
+            ]
+    return []
+
+
 def _raise_for_status(
     response: httpx.Response,
     *,
@@ -184,6 +220,10 @@ def _raise_for_status(
         return
 
     _log_http_error(response)
+
+    invalid_keys = _unsupported_argument_keys(response)
+    if invalid_keys:
+        raise CloudruUnsupportedArguments(response.status_code, invalid_keys)
 
     message = (
         not_found_message

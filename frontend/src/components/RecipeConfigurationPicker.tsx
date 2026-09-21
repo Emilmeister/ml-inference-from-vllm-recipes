@@ -4,21 +4,27 @@ import type { RecipeDetail } from "../types";
 
 type Props = {
   configuration: NonNullable<RecipeDetail["configuration"]>;
+  disabled?: boolean;
   onChange: (group: string, option: string, selected: boolean) => void;
   onReset: () => void;
 };
 
-export function RecipeConfigurationPicker({ configuration, onChange, onReset }: Props) {
+export function RecipeConfigurationPicker({
+  configuration,
+  disabled = false,
+  onChange,
+  onReset,
+}: Props) {
   const groups = configuration.groups.filter((group) => group.options.length > 0);
 
   return (
-    <div className="recipe-configurator">
+    <div aria-busy={disabled} className="recipe-configurator">
       <div className="recipe-configurator__intro">
         <div>
           <p><SlidersHorizontal aria-hidden="true" size={18} />Конфигурация из vLLM Recipes</p>
           <span>Доступные комбинации пересчитываются сервером по опубликованным JSON.</span>
         </div>
-        <button onClick={onReset} type="button"><RotateCcw aria-hidden="true" size={15} />По умолчанию</button>
+        <button disabled={disabled} onClick={onReset} type="button"><RotateCcw aria-hidden="true" size={15} />По умолчанию</button>
       </div>
 
       <div className="recipe-configurator__groups">
@@ -46,7 +52,7 @@ export function RecipeConfigurationPicker({ configuration, onChange, onReset }: 
                       <input
                         aria-describedby={explanationId}
                         checked={option.selected}
-                        disabled={unavailable || readOnly}
+                        disabled={disabled || unavailable || readOnly}
                         name={`configuration-${group.key}`}
                         onChange={(event) => onChange(group.key, option.key, event.target.checked)}
                         type={group.control === "multiple" ? "checkbox" : "radio"}

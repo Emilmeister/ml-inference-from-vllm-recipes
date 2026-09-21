@@ -105,7 +105,9 @@ def create_app(
             or not index.is_file()
         ):
             raise HTTPException(status_code=404, detail="Not found")
-        return FileResponse(index)
+        # AICODE-NOTE: The entry document references hashed assets and must be
+        # revalidated so a rebuilt UI is not hidden behind a stale SPA shell.
+        return FileResponse(index, headers={"Cache-Control": "no-cache"})
 
     return app
 

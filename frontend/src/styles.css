@@ -343,6 +343,85 @@ a:focus-visible {
   line-height: 1.55;
 }
 
+.error-dialog__actions {
+  display: flex;
+  flex-wrap: wrap;
+  gap: 10px;
+  align-items: center;
+}
+
+.error-dialog__actions .primary-button {
+  margin-top: 0;
+}
+
+.frontend-recommendation-dialog {
+  width: min(92vw, 560px);
+  padding: 34px;
+  border: 1px solid var(--ink);
+  border-radius: 3px 30px 3px 3px;
+  color: var(--ink);
+  background: var(--cream);
+  box-shadow: 12px 12px 0 var(--blue);
+}
+
+.frontend-recommendation-dialog::backdrop {
+  background: rgb(23 22 18 / 68%);
+  backdrop-filter: blur(4px);
+}
+
+.frontend-recommendation-dialog__close {
+  position: absolute;
+  top: 14px;
+  right: 14px;
+  display: grid;
+  width: 36px;
+  height: 36px;
+  padding: 0;
+  border: 1px solid var(--line);
+  border-radius: 50%;
+  color: var(--ink);
+  background: var(--paper);
+  cursor: pointer;
+  place-items: center;
+}
+
+.frontend-recommendation-dialog__icon { color: var(--blue); }
+
+.frontend-recommendation-dialog h2 {
+  margin: 14px 0 0;
+  font-family: "Iowan Old Style", "Palatino Linotype", Georgia, serif;
+  font-size: clamp(2.2rem, 6vw, 4rem);
+  font-weight: 500;
+  line-height: 0.95;
+  letter-spacing: -0.04em;
+}
+
+.frontend-recommendation-dialog > p:not(.kicker) {
+  margin: 20px 0 26px;
+  color: var(--ink-soft);
+  line-height: 1.55;
+}
+
+.frontend-recommendation-dialog__actions {
+  display: grid;
+  grid-template-columns: auto 1fr;
+  gap: 12px;
+  align-items: center;
+}
+
+.frontend-recommendation-dialog__actions > button:first-child {
+  min-height: 46px;
+  padding: 0 16px;
+  border: 1px solid var(--line);
+  border-radius: 7px;
+  color: var(--ink);
+  background: #fffdf8;
+  font-weight: 800;
+  cursor: pointer;
+}
+
+.frontend-recommendation-dialog__actions .primary-button { margin: 0; }
+
 .setup-panel form {
   margin-top: 30px;
 }
@@ -1396,6 +1475,56 @@ a:focus-visible {
   color: var(--ink);
   background: #fff1bd;
   box-shadow: 4px 4px 0 var(--orange);
+}
+
+.gpu-memory-control {
+  display: grid;
+  gap: 10px;
+  margin-top: 24px;
+  padding: 18px;
+  border: 1px solid var(--line);
+  border-radius: 8px;
+  background: #fffdf8;
+}
+
+.gpu-memory-control__heading,
+.gpu-memory-control small {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+}
+
+.gpu-memory-control__heading {
+  color: var(--ink);
+  font-size: 0.78rem;
+  font-weight: 850;
+}
+
+.gpu-memory-control output {
+  min-width: 52px;
+  padding: 5px 8px;
+  border-radius: 999px;
+  color: var(--ink);
+  background: var(--mint);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  text-align: center;
+}
+
+.gpu-memory-control input {
+  width: 100%;
+  accent-color: var(--orange-deep);
+  cursor: pointer;
+}
+
+.gpu-memory-control small {
+  color: var(--ink-soft);
+  font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+  font-size: 0.68rem;
+}
+
+.configuration-adjustments {
+  margin: 4px 0 0;
+  padding-left: 18px;
 }
 
 .scale-grid {

@@ -101,6 +101,7 @@ def backend_detail(
     warnings: list[str] | None = None,
     model_id: str = "Acme/Small-FP8",
     arguments: list[dict[str, Any]] | None = None,
+    environment: list[dict[str, Any]] | None = None,
 ) -> RecipeDetail:
     return RecipeDetail.model_validate(
         {
@@ -118,7 +119,7 @@ def backend_detail(
             "translated": {
                 "model_id": model_id,
                 "arguments": arguments or [],
-                "environment": [],
+                "environment": environment or [],
                 "recommended_gpu_count": 2,
                 "recommended_hardware": hardware,
             },
@@ -890,6 +891,163 @@ def frontend_dependencies_updated(
     expect(preview).to_contain_text('"frontend": "python"')
     expect(preview).to_contain_text('"value": "python"')
     expect(preview).not_to_contain_text("VLLM_USE_RUST_FRONTEND")
+
+
+@given("рецепт содержит обязательный env-параметр, который отклоняет runtime template")
+def unsupported_runtime_parameter(
+    page: Page,
+    frontend_url: str,
+    deployment_state: dict[str, Any],
+) -> None:
+    rejected_key = "VLLM_PLE_CPU_OFFLOAD"
+    detail = backend_detail(
+        arguments=[
+            {
+                "key": "max-num-seqs",
+                "value": 256,
+                "parameterType": "PARAMETER_TYPE_ARG_KV_NUMERIC",
+            },
+            {
+                "key": "vllm-ple-cpu-offload",
+                "value": "keep-distinct-key",
+                "parameterType": "PARAMETER_TYPE_ARG_KV",
+            },
+        ],
+        environment=[
+            {
+                "key": rejected_key,
+                "value": "1",
+                "parameterType": "PARAMETER_TYPE_ENV",
+            },
+            {
+                "key": "VLLM_ALLOW_LONG_MAX_MODEL_LEN",
+                "value": "1",
+                "parameterType": "PARAMETER_TYPE_ENV",
+            },
+        ],
+    )
+
+    def cloud_response(request: httpx.Request) -> httpx.Response:
+        if str(request.url).startswith("https://iam.api.cloud.ru/"):
+            return httpx.Response(200, json={"access_token": "test-iam-token"})
+        return httpx.Response(
+            400,
+            headers={"X-Request-ID": "request-invalid-args"},
+            json={
+                "errors": [{
+                    "key": "framework_registry.arguments_validation_error",
+                    "details": {
+                        "framework_version_id": "runtime-vllm",
+                        "invalid_keys": [rejected_key],
+                    },
+                }],
+                "total": 1,
+            },
+        )
+
+    http = httpx.AsyncClient(transport=httpx.MockTransport(cloud_response))
+    app = create_app(
+        recipes=FakeRecipes(detail),
+        cloud_factory=lambda credentials: CloudruClient(credentials, http),
+    )
+    with TestClient(app) as client:
+        rejection = client.post("/api/cloud/inferences", json=deployment_request())
+        assert client.portal is not None
+        client.portal.call(http.aclose)
+
+    deployment_state["backend_detail"] = detail
+    deployment_state["rejected_key"] = rejected_key
+    deployment_state["create_responses"] = [
+        {"status": rejection.status_code, "body": rejection.json()},
+        {"status": rejection.status_code, "body": rejection.json()},
+    ]
+    open_deployment(page, frontend_url, deployment_state)
+    select_access(page)
+
+
+@when("Cloud.ru возвращает invalid_keys при создании")
+def cloud_rejects_runtime_parameter(page: Page) -> None:
+    submit_deployment(page)
+
+
+@then("модальное окно перечисляет отклонённые параметры и предупреждает о риске")
+def unsupported_parameter_warning(page: Page, deployment_state: dict[str, Any]) -> None:
+    dialog = page.get_by_role("dialog")
+    expect(dialog).to_be_visible()
+    expect(dialog).to_contain_text(deployment_state["rejected_key"])
+    expect(dialog).to_contain_text("может запуститься некорректно")
+    expect(
+        dialog.get_by_role("button", name="Создать без этих параметров")
+    ).to_be_visible()
+    assert len(deployment_state["create_requests"]) == 1
+
+
+@when("пользователь выбирает создание без этих параметров")
+def create_without_unsupported_parameters(page: Page) -> None:
+    page.get_by_role("button", name="Создать без этих параметров").click()
+
+
+@then("приложение отправляет ровно один повтор без отклонённых параметров")
+def one_explicit_retry_without_rejected_parameters(
+    page: Page,
+    deployment_state: dict[str, Any],
+) -> None:
+    expect(page.get_by_role("dialog")).to_be_visible()
+    requests = deployment_state["create_requests"]
+    assert len(requests) == 2
+    assert "excluded_argument_keys" not in requests[0]
+    assert requests[1]["excluded_argument_keys"] == [deployment_state["rejected_key"]]
+
+
+@then("повторная runtime-ошибка больше не предлагает новый запуск")
+def repeated_runtime_error_is_terminal(page: Page) -> None:
+    expect(
+        page.get_by_role("button", name="Создать без этих параметров")
+    ).to_have_count(0)
+
+
+@then("остальные точные параметры рецепта сохраняются")
+def remaining_recipe_parameters_are_preserved(deployment_state: dict[str, Any]) -> None:
+    cloud = FakeCloud()
+    app = create_app(
+        recipes=FakeRecipes(deployment_state["backend_detail"]),
+        cloud_factory=lambda _credentials: cloud,
+    )
+    with TestClient(app) as client:
+        response = client.post(
+            "/api/cloud/inferences",
+            json=deployment_state["create_requests"][1],
+        )
+
+    assert response.status_code == 201
+    keys = {
+        argument["key"]
+        for argument in cloud.create_calls[0]["servingOptions"]["dynamicalOptions"]["args"]
+    }
+    assert deployment_state["rejected_key"] not in keys
+    assert "max-num-seqs" in keys
+    assert "vllm-ple-cpu-offload" in keys
+    assert "VLLM_ALLOW_LONG_MAX_MODEL_LEN" in keys
+    assert "gpu-memory-utilization" in keys
+
+
+@given("приложение раздаёт собранный frontend")
+def production_frontend(deployment_state: dict[str, Any]) -> None:
+    app = create_app(recipes=object(), cloud_factory=lambda _credentials: FakeCloud())
+    deployment_state["production_app"] = app
+
+
+@when("браузер запрашивает страницу приложения")
+def request_production_page(deployment_state: dict[str, Any]) -> None:
+    with TestClient(deployment_state["production_app"]) as client:
+        deployment_state["frontend_response"] = client.get("/deploy?model=Acme%2FSmall")
+
+
+@then("HTML-оболочка требует перепроверки свежей версии")
+def frontend_shell_is_revalidated(deployment_state: dict[str, Any]) -> None:
+    response = deployment_state["frontend_response"]
+    assert response.status_code == 200
+    assert response.headers["Cache-Control"] == "no-cache"
 
 
 @given("Cloud.ru отклонил запрос с ошибкой, содержащей секрет")

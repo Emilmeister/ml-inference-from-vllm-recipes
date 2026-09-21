@@ -79,6 +79,8 @@ class CreateInferenceRequest(BaseModel):
     service_account_id: UUID
     authentication_type: AuthenticationType
     log_group_id: UUID
+    gpu_memory_utilization: float = Field(default=0.97, ge=0.85, le=0.99)
+    excluded_argument_keys: list[str] = Field(default_factory=list, max_length=64)
     configuration: RecipeConfigurationSelection = Field(
         default_factory=RecipeConfigurationSelection
     )
@@ -88,6 +90,16 @@ class CreateInferenceRequest(BaseModel):
     @classmethod
     def strip_display_ids(cls, value: Any) -> Any:
         return value.strip() if isinstance(value, str) else value
+
+    @field_validator("excluded_argument_keys")
+    @classmethod
+    def validate_excluded_argument_keys(cls, values: list[str]) -> list[str]:
+        if len(values) != len(set(values)) or any(
+            not re.fullmatch(r"[A-Za-z0-9][A-Za-z0-9_.-]{0,127}", value)
+            for value in values
+        ):
+            raise ValueError("excluded_argument_keys содержат некорректный ключ")
+        return values
 
     @model_validator(mode="after")
     def validate_scale_range(self) -> Self:
@@ -262,3 +274,4 @@ class RecipeDetail(BaseModel):
     launchable: bool
     launch_reason: str | None = None
     compatibility_warnings: list[str] = Field(default_factory=list)
+    configuration_adjustments: list[str] = Field(default_factory=list)

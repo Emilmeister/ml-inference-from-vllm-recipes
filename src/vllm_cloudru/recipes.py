@@ -93,7 +93,7 @@ class RecipeClient:
         )
         self._models: tuple[RecipeSummary, ...] | None = None
         self._taxonomy: dict[str, Any] | None = None
-        self._details: dict[tuple[str, str, str, bool], RecipeDetail] = {}
+        self._details: dict[tuple[str, str, str, bool, bool], RecipeDetail] = {}
         self._catalogs: dict[str, tuple[RecipeCatalogItem, ...]] = {}
         self._generation = 0
         self._last_catalog_scan: dict[str, float] = {}
@@ -383,6 +383,7 @@ class RecipeClient:
         selection: RecipeConfigurationSelection | None = None,
         *,
         include_configuration: bool = True,
+        reconcile_configuration: bool = False,
     ) -> RecipeDetail:
         if resource_type not in SUPPORTED_RESOURCE_TYPES:
             raise RecipeResourceTypeError("Неизвестный тип GPU-ресурса")
@@ -393,6 +394,7 @@ class RecipeClient:
             resource_type,
             requested.model_dump_json(exclude_none=True),
             include_configuration,
+            reconcile_configuration,
         )
         cached = self._details.get(cache_key)
         if cached is not None:
@@ -434,6 +436,7 @@ class RecipeClient:
         # AICODE-NOTE: Follow only paths published by the recipe index/document;
         # hardware, variant and strategy URLs must never be synthesized from an HF ID.
         configuration = None
+        configuration_adjustments: list[str] = []
         if include_configuration:
             published_variants = variants or {"default": {}}
             states: dict[str, dict[str, Any]] = {}
@@ -542,7 +545,7 @@ class RecipeClient:
                     strategy_key = state["strategy_key"]
                     rendering_path = state["strategy_path"]
                     strategy_options = state["strategy_options"]
-                rendering, configuration = compose_configuration(
+                rendering, configuration, configuration_adjustments = compose_configuration(
                     rendering=rendering,
                     recipe=state["recipe"],
                     variant_key=variant_key,
@@ -552,6 +555,7 @@ class RecipeClient:
                     variant_options=variant_options,
                     strategy_options=strategy_options,
                     taxonomy=await self._get_taxonomy(),
+                    reconcile=reconcile_configuration,
                     apply_variant_overrides=(
                         not state["linked"] and variant_key != source_variant_key
                     ),
@@ -625,6 +629,7 @@ class RecipeClient:
             launchable=launchable,
             launch_reason=launch_reason,
             compatibility_warnings=warnings,
+            configuration_adjustments=configuration_adjustments,
         )
         if self._generation == detail_generation:
             self._details[cache_key] = detail

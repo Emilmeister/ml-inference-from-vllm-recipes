@@ -359,9 +359,10 @@ def compose_configuration(
     variant_options: list[RecipeConfigurationOption],
     strategy_options: list[RecipeConfigurationOption],
     taxonomy: dict[str, Any],
+    reconcile: bool = False,
     apply_variant_overrides: bool = True,
     source_variant_metadata: dict[str, Any] | None = None,
-) -> tuple[dict[str, Any], ResolvedRecipeConfiguration]:
+) -> tuple[dict[str, Any], ResolvedRecipeConfiguration, list[str]]:
     composed = deepcopy(rendering)
     argv = composed.get("argv")
     if not isinstance(argv, list) or not all(isinstance(value, str) for value in argv):
@@ -447,7 +448,10 @@ def compose_configuration(
 
     feature_options: list[RecipeConfigurationOption] = []
     mode_groups: list[RecipeConfigurationGroup] = []
+    resolved_features: list[str] = []
     resolved_modes: dict[str, str] = {}
+    consumed_modes: set[str] = set()
+    adjustments: list[str] = []
     for key, raw_feature in features.items():
         if not isinstance(key, str) or not isinstance(raw_feature, dict):
             continue
@@ -455,8 +459,20 @@ def compose_configuration(
             raw_feature, variant_key, strategy_key, rendering
         )
         selected = key in selected_features
+        modes = raw_feature.get("modes")
+        requested_mode = requested.feature_modes.get(key)
+        if selected and isinstance(modes, dict) and modes and requested_mode is not None:
+            if requested_mode not in modes:
+                raise RecipeConfigurationError(
+                    f"Неизвестный режим {key}: {requested_mode}"
+                )
+            consumed_modes.add(key)
         if selected and not available:
-            raise RecipeConfigurationError(reason or f"Feature {key} недоступна")
+            if not reconcile:
+                raise RecipeConfigurationError(reason or f"Feature {key} недоступна")
+            label = str(raw_feature.get("label") or display_label(key))
+            adjustments.append(f"{label} отключена: {reason or 'опция недоступна'}.")
+            selected = False
         description = raw_feature.get("description")
         feature_options.append(
             _option(
@@ -470,23 +486,48 @@ def compose_configuration(
         )
         if not selected:
             continue
+        resolved_features.append(key)
 
-        modes = raw_feature.get("modes")
         if isinstance(modes, dict) and modes:
-            requested_mode = requested.feature_modes.get(key)
             default_mode = default_modes.get(key) or raw_feature.get("default_mode")
             allowed_modes = [
                 candidate
                 for candidate, raw_mode in modes.items()
                 if _mode_available(raw_mode, variant_key, rendering)[0]
             ]
-            mode_key = requested_mode or (
+            fallback_mode = (
                 default_mode
                 if isinstance(default_mode, str) and default_mode in allowed_modes
                 else allowed_modes[0]
             )
-            if mode_key not in modes:
-                raise RecipeConfigurationError(f"Неизвестный режим {key}: {mode_key}")
+            mode_key = requested_mode or fallback_mode
+            chosen_available, chosen_reason = _mode_available(
+                modes[mode_key], variant_key, rendering
+            )
+            if not chosen_available:
+                if not reconcile:
+                    raise RecipeConfigurationError(
+                        chosen_reason or f"Режим {key}: {mode_key} недоступен"
+                    )
+                old_label = (
+                    modes[mode_key].get("label")
+                    if isinstance(modes[mode_key], dict)
+                    else None
+                )
+                fallback_label = (
+                    modes[fallback_mode].get("label")
+                    if isinstance(modes[fallback_mode], dict)
+                    else None
+                )
+                feature_label = str(
+                    raw_feature.get("label") or display_label(key)
+                )
+                adjustments.append(
+                    f"Режим {old_label or display_label(mode_key)} для "
+                    f"{feature_label} недоступен на выбранном GPU; выбран "
+                    f"{fallback_label or display_label(fallback_mode)}."
+                )
+                mode_key = fallback_mode
             mode_options: list[RecipeConfigurationOption] = []
             for candidate, raw_mode in modes.items():
                 mode_available, mode_reason = _mode_available(
@@ -505,13 +546,6 @@ def compose_configuration(
                         available=mode_available,
                         unavailable_reason=mode_reason,
                     )
-                )
-            chosen_available, chosen_reason = _mode_available(
-                modes[mode_key], variant_key, rendering
-            )
-            if not chosen_available:
-                raise RecipeConfigurationError(
-                    chosen_reason or f"Режим {key}: {mode_key} недоступен"
                 )
             chosen_payload = _payload(modes[mode_key], rendering)
             if chosen_payload is None:
@@ -537,7 +571,7 @@ def compose_configuration(
             argv.extend(feature_args)
             env.update(feature_env)
 
-    unknown_modes = set(requested.feature_modes) - set(resolved_modes)
+    unknown_modes = set(requested.feature_modes) - consumed_modes - set(resolved_modes)
     if unknown_modes:
         raise RecipeConfigurationError(
             "Режим указан для невыбранной feature-опции или feature без режимов"
@@ -601,10 +635,14 @@ def compose_configuration(
         strategy=strategy_key,
         kv_offload=kv_key,
         frontend=frontend,
-        features=selected_features,
+        features=resolved_features,
         feature_modes=resolved_modes,
     )
-    return composed, ResolvedRecipeConfiguration(selection=selection, groups=groups)
+    return (
+        composed,
+        ResolvedRecipeConfiguration(selection=selection, groups=groups),
+        adjustments,
+    )
 
 
 def unavailable_configuration(

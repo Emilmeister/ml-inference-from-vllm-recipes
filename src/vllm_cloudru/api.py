@@ -4,7 +4,11 @@ import httpx
 from fastapi import APIRouter, HTTPException, Query, Request
 from pydantic import BaseModel, ConfigDict, ValidationError
 
-from vllm_cloudru.cloudru import CloudruCreateUncertain, CloudruError
+from vllm_cloudru.cloudru import (
+    CloudruCreateUncertain,
+    CloudruError,
+    CloudruUnsupportedArguments,
+)
 from vllm_cloudru.deployment import (
     ConfirmationRequired,
     InvalidDeploymentRequest,
@@ -106,6 +110,7 @@ async def recipe_detail(
     feature: Annotated[list[str] | None, Query()] = None,
     feature_mode: Annotated[list[str] | None, Query()] = None,
     features_configured: bool = False,
+    reconcile_configuration: bool = False,
 ) -> RecipeDetail:
     try:
         modes: dict[str, str] = {}
@@ -130,6 +135,7 @@ async def recipe_detail(
             f"{organization}/{model}",
             resource_type=resource_type,
             selection=selection,
+            reconcile_configuration=reconcile_configuration,
         )
     except RecipeConfigurationError as error:
         raise _configuration_error(error) from error
@@ -222,6 +228,15 @@ async def create_inference(
                 "message": error.public_message,
                 "manualCheckRequired": True,
                 "instruction": "Обновите список Model Run вручную перед повторной попыткой.",
+            },
+        ) from error
+    except CloudruUnsupportedArguments as error:
+        raise HTTPException(
+            status_code=error.status_code,
+            detail={
+                "code": "unsupported_runtime_arguments",
+                "message": error.public_message,
+                "invalidKeys": error.invalid_keys,
             },
         ) from error
     except CloudruError as error:

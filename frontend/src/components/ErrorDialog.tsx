@@ -2,11 +2,13 @@ import { TriangleAlert, X } from "lucide-react";
 import { useEffect, useId, useRef } from "react";
 
 type ErrorDialogProps = {
+  actionLabel?: string;
   message: string | null;
+  onAction?: () => void;
   onClose: () => void;
 };
 
-export function ErrorDialog({ message, onClose }: ErrorDialogProps) {
+export function ErrorDialog({ actionLabel, message, onAction, onClose }: ErrorDialogProps) {
   const dialogRef = useRef<HTMLDialogElement>(null);
   const titleId = useId();
 
@@ -37,7 +39,14 @@ export function ErrorDialog({ message, onClose }: ErrorDialogProps) {
       <p className="kicker">Создание не выполнено</p>
       <h2 id={titleId}>Cloud.ru вернул ошибку</h2>
       <p>{message}</p>
-      <button className="primary-button" onClick={onClose} type="button">Закрыть</button>
+      <div className="error-dialog__actions">
+        {actionLabel && onAction ? (
+          <button className="primary-button" onClick={onAction} type="button">
+            {actionLabel}
+          </button>
+        ) : null}
+        <button onClick={onClose} type="button">Закрыть</button>
+      </div>
     </dialog>
   );
 }

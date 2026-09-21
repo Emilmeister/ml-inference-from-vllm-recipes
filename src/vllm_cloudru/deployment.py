@@ -83,6 +83,11 @@ def _warnings(
     return list(dict.fromkeys(warnings))
 
 
+def _argument_key(argument: dict[str, Any]) -> str:
+    key = argument.get("key")
+    return key.lstrip("-").replace("_", "-").lower() if isinstance(key, str) else ""
+
+
 def build_payload(request: CreateInferenceRequest, detail: RecipeDetail) -> dict[str, Any]:
     if not detail.launchable or detail.translated is None:
         raise UnsupportedRecipe(detail.launch_reason)
@@ -114,6 +119,23 @@ def build_payload(request: CreateInferenceRequest, detail: RecipeDetail) -> dict
             "secretId": request.credentials.hf_secret_id,
             "version": 1,
         }
+    # AICODE-NOTE: These exact keys come from an explicit retry after Cloud.ru
+    # definitively rejected the first create; never normalize or apply them automatically.
+    excluded_keys = set(request.excluded_argument_keys)
+    arguments = [
+        argument
+        for argument in [*translated.arguments, *translated.environment]
+        if argument.get("key") not in excluded_keys
+        and _argument_key(argument) != "gpu-memory-utilization"
+    ]
+    if "gpu-memory-utilization" not in excluded_keys:
+        arguments.append(
+            {
+                "key": "gpu-memory-utilization",
+                "value": request.gpu_memory_utilization,
+                "parameterType": "PARAMETER_TYPE_ARG_KV_NUMERIC",
+            }
+        )
     return {
         "name": normalize_name(request.name),
         "frameworkType": "FrameworkType_VLLM",
@@ -125,7 +147,7 @@ def build_payload(request: CreateInferenceRequest, detail: RecipeDetail) -> dict
         "modelSource": model_source,
         "servingOptions": {
             "dynamicalOptions": {
-                "args": [*translated.arguments, *translated.environment],
+                "args": arguments,
                 "loraModules": [],
             },
             "cacheOptions": {},

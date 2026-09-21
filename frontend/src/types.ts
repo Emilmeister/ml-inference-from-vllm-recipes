@@ -84,6 +84,7 @@ export type RecipeDetail = RecipeCatalogItem & {
     selection: RecipeConfigurationSelection;
     groups: RecipeConfigurationGroup[];
   } | null;
+  configuration_adjustments: string[];
 };
 
 export type ModelRunSummary = {
@@ -126,6 +127,8 @@ export type CreateInferenceInput = {
     | "AUTHENTICATION_TYPE_KEY_BASED"
     | "AUTHENTICATION_TYPE_TOKEN_BASED";
   log_group_id: string;
+  gpu_memory_utilization: number;
+  excluded_argument_keys?: string[];
   configuration: RecipeConfigurationSelection;
   confirm_warnings: boolean;
 };
